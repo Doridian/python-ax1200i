@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 
 
-import os
 import serial
-from select import select
 from binascii import hexlify
 
 from enum import Enum
 
 from liquidctl.driver.base import BaseDriver
 from liquidctl.pmbus import CommandCode as CMD
-from liquidctl.pmbus import linear_to_float, float_to_linear11
-from datetime import timedelta
+from liquidctl.pmbus import linear_to_float
+from datetime import timedelta, datetime
 from time import sleep
 
 _decode_table = tuple(b'0\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x10 !\x00\x12"#\x00\x00\x00\x00\x00\x00\x00\x00\x00\x14$%\x00\x16&\'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x18()\x00\x1a*+\x00\x00\x00\x00\x00\x00\x00\x00\x00\x1c,-\x00\x1e./\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00')
@@ -63,42 +61,41 @@ class CorsairAxPsu(BaseDriver):
         self.type = ''
         pass
 
-    def data_read_dongle(self,size=512):
-        if (size < 0):
-            size = 512
-        size *= 2
-        
-        # select([self.fd],[],[],1)
+    def data_read_dongle(self):
+        r = b''
 
-        r = self.fd.read(size)
-        return self.decode_answer(r )
+        while True:
+            to_read = self.fd.in_waiting
+            if to_read <= 0:
+                to_read = 1
+            r += self.fd.read(to_read)
+            if r[-1] == 0:
+                break
+        if not r:
+            return r
+        return self.decode_answer(r)
 
-    def data_write_dongle(self,datain):
-        data = self.encode_answer(0,datain)
-        #print(hexlify(data, ' ').decode())
+    def data_write_dongle(self, datain):
+        data = self.encode_answer(0, datain)
         return self.fd.write(data)
         
 
     def decode_answer(self,data):
-        # Half of data
-        # ret = bytes(len(data)/2)
-        if not ((_decode_table[ data[0] ] & 0xf) >> 1) == 7:
+        if not ((_decode_table[data[0]] & 0xf) >> 1) == 7:
             raise (ValueError("Wrong reply data!"))
         ret = b''
         for i in range(1,len(data)-1,2):
             ret += bytes(
                     [(_decode_table[data[i]] & 0xF) | ((_decode_table[data[i + 1]] & 0xF) << 4)]
                 )
-        #print(ret)
         return ret
 
     def encode_answer(self,command, data):
-        #ret = list(bytes(len(data)*2+2)) # Double size + 2 bytes, a command byte and 0x00 on the end
         ret = bytes([ _encode_table[(command << 1) & 0xF] & 0xFC])
         
         for i in data:
-            ret += bytes([_encode_table[i & 0xf]])
-            ret += bytes([_encode_table[i >> 4 ]])
+            ret += bytes([_encode_table[i & 0xF]])
+            ret += bytes([_encode_table[i >> 4]])
         ret += b'\x00'
         return ret
 
@@ -137,12 +134,12 @@ class CorsairAxPsu(BaseDriver):
 
 
     def read_dongle_name(self):
-        self.data_write_dongle(b'\x02' )
-        return self.data_read_dongle(512)[:-1].decode()  # eat \x00 at the end there
+        self.data_write_dongle(b'\x02')
+        return self.data_read_dongle().decode()
 
     def read_dongle_version(self):
-        self.data_write_dongle( b'\x00' )
-        ret = self.data_read_dongle(5)
+        self.data_write_dongle( b'\x00')
+        ret = self.data_read_dongle()
         return float((ret[1] >> 4) + (ret[1] & 0xF)) / 10.0
 
     def read_pmbus(self, register, length):
@@ -150,14 +147,14 @@ class CorsairAxPsu(BaseDriver):
         # reg 0x9a, len 7
         d1 = bytes((0x13, 3, 6, 1, 7, length, register ))
         self.data_write_dongle( d1)
-        ret = self.data_read_dongle( 2)
+        ret = self.data_read_dongle()
         if not ret == b'':
             raise Exception("Unexpected reply: {}".format(hexlify(ret)))
         # Seems to be always empty.
 
         d2 = bytes((8, 7, length))
         self.data_write_dongle(d2)
-        ret = self.data_read_dongle(length + 1)
+        ret = self.data_read_dongle()
         return ret
 
     def write_pmbus(self, register, data):
@@ -165,7 +162,7 @@ class CorsairAxPsu(BaseDriver):
         cmd = bytes((0x13, 1, 4, (len(data) + 1), register, ) + tuple(data))
         #print(hexlify(cmd, ' '))
         self.data_write_dongle( cmd)
-        return self.data_read_dongle(1)
+        return self.data_read_dongle()
         
 
     def read_psu_model(self):
@@ -183,24 +180,24 @@ class CorsairAxPsu(BaseDriver):
     def init_dongle(self):
         retry = 3
         done = 0
-        if not send_init():
+        if not self.send_init():
             raise Exception("oh no")
 
-    def setup_dongle(self ):
+    def setup_dongle(self):
         # The other implementation always does this, but it might not be necessary
-        print( "Dongle name: {}".format( self.read_dongle_name() ))
+        print("Dongle name: {}".format(self.read_dongle_name()))
 
         # Wonder what this is
         d = (17, 2, 100, 0, 0, 0, 0)
         self.data_write_dongle( d )
-        ret = self.data_read_dongle(1)
+        ret = self.data_read_dongle()
 
         #print( "Mysterious reply: {}".format(hexlify(ret).decode()))
 
-        print( "Dongle Version: {}".format( self.read_dongle_version() ))
+        print( "Dongle Version: {}".format(self.read_dongle_version()))
 
         self.type =  self.read_psu_model()
-        print( "PSU type: {}".format( self.type ))
+        print("PSU type: {}".format(self.type))
 
 
     def _get_float(self, command):
@@ -214,9 +211,8 @@ class CorsairAxPsu(BaseDriver):
         return linear_to_float(self.read_pmbus( command, 2))
 
     def _get_timedelta(self,command):
-        # This returns a wrong number which increments correctly.
         sec = self.read_pmbus(command, 4)
-        return timedelta(seconds=int.from_bytes([sec[2], sec[3], sec[0], sec[1]], byteorder="little"))
+        return timedelta(seconds=int.from_bytes(sec, byteorder="little"))
     
     def _get_fan_control_mode(self):
         return FanControlMode(self.read_pmbus(_CORSAIR_FAN_CONTROL_MODE, 1)[0])
@@ -235,7 +231,7 @@ class CorsairAxPsu(BaseDriver):
         return for_in115v + (for_in230v - for_in115v) / 115 * (input_voltage - 115)
  
 
-    def get_status(self ):
+    def get_status(self):
         ret = self.write_pmbus(CMD.PAGE, [0])
         if not (ret == b''):
             print("Failed to change page.")
@@ -334,13 +330,14 @@ class CorsairAxPsu(BaseDriver):
 
 if __name__ == "__main__":
     psu = CorsairAxPsu()
-    psu.open_dongle("/dev/serial/by-id/usb-Silicon_Labs_Corsair_Link_TM_USB_Dongle_R26K0297-if00-port0")
+    psu.open_dongle("/dev/serial/by-id/usb-Silicon_Labs_Corsair_Link_TM_USB_Dongle_R42S0145-if00-port0")
     
     # Print some dongle messages. Necessary? Maybe?
     psu.setup_dongle()
     status =  psu.get_status()
     for l in status:
         print("{:25s}{:>13s} {:<10s}".format(l[0], str(l[1]), l[2]))
+
     status = psu.get_12v_rails()
     for n in range(0, len(status)):
         print("----- Rail", n)
