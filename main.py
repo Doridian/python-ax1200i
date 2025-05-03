@@ -16,7 +16,6 @@ _decode_table = tuple(b'0\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x0
 _encode_table = tuple(b'UVYZefij\x95\x96\x99\x9a\xa5\xa6\xa9\xaa')
 
 
-_SLAVE_ADDRESS = 0x02 # Not used, just copypaste
 _CORSAIR_READ_TOTAL_UPTIME = CMD.MFR_SPECIFIC_D1
 _CORSAIR_READ_UPTIME = CMD.MFR_SPECIFIC_D2
 _CORSAIR_12V_OCP_MODE = CMD.MFR_SPECIFIC_D8
@@ -27,9 +26,6 @@ _RAIL_12V = 0x0
 _RAIL_5V = 0x1
 _RAIL_3P3V = 0x2
 _RAIL_NAMES = {_RAIL_12V: '+12V', _RAIL_5V: '+5V', _RAIL_3P3V: '+3.3V'}
-_MIN_FAN_DUTY = 0
-
-
 
 # Hoping these are the same
 class OCPMode(Enum):
@@ -77,7 +73,6 @@ class CorsairAxPsu(BaseDriver):
     def data_write_dongle(self, datain):
         data = self.encode_answer(0, datain)
         return self.fd.write(data)
-        
 
     def decode_answer(self,data):
         if not ((_decode_table[data[0]] & 0xf) >> 1) == 7:
@@ -98,54 +93,20 @@ class CorsairAxPsu(BaseDriver):
         ret += b'\x00'
         return ret
 
-    def convert_byte_float(self, data):
-        """ liquidctl.pmbus.linear_to_float does this instead now """
-        p1 = (data[1] >> 3) & 31
-        if p1 > 15:
-            p1 -= 32
-        p2 = p2 = (data[1] & 7) * 256 + data[0]
-        if p2 > 1024:
-            p2 = -1 * (65536 - (p2 | 63488))
-        return p2 * (2.0**p1)
-
-    def convert_float_byte(self, val, exp):
-        """ liquidctl.pmbus.float_to_linear11 does this instead now """
-        p1 = 0
-        ret = [0, 0]
-        if val > 0.0:
-            p1 = int(val * (2.0**exp))
-            if p1 > 1023:
-                p1 = 1023
-        else:
-            p2 = int(val * (2.0**exp))
-            if p2 < -1023:
-                p2 = -1023
-            p1 = p2 & 2047
-        ret[0] = p1 & 255
-        if exp <= 0:
-            exp *= -1
-        else:
-            exp = 256 - exp
-        exp = exp << 3 & 255
-        ret[1] = p1 >> 8 & 255 | exp
-        return bytes(ret)
-
-
-
     def read_dongle_name(self):
         self.data_write_dongle(b'\x02')
         return self.data_read_dongle().decode()
 
     def read_dongle_version(self):
-        self.data_write_dongle( b'\x00')
+        self.data_write_dongle(b'\x00')
         ret = self.data_read_dongle()
         return float((ret[1] >> 4) + (ret[1] & 0xF)) / 10.0
 
     def read_pmbus(self, register, length):
         # C read_data_psu
         # reg 0x9a, len 7
-        d1 = bytes((0x13, 3, 6, 1, 7, length, register ))
-        self.data_write_dongle( d1)
+        d1 = bytes((0x13, 3, 6, 1, 7, length, register))
+        self.data_write_dongle(d1)
         ret = self.data_read_dongle()
         if not ret == b'':
             raise Exception("Unexpected reply: {}".format(hexlify(ret)))
@@ -159,28 +120,21 @@ class CorsairAxPsu(BaseDriver):
     def write_pmbus(self, register, data):
         # C write_data_psu
         cmd = bytes((0x13, 1, 4, (len(data) + 1), register, ) + tuple(data))
-        #print(hexlify(cmd, ' '))
-        self.data_write_dongle( cmd)
+        self.data_write_dongle(cmd)
         return self.data_read_dongle()
         
-
     def read_psu_model(self):
         # C read_psu_type
         return self.read_pmbus(CMD.MFR_MODEL, 7).decode()
 
-
     def send_init(self):
         # Mystery init code from https://github.com/Hagbard-Celin/cpsumon/commit/2e2ecc4d24a9b807bb71fe79d797786edb3365b4
         # Not sure if it is needed?
-        init_seq = b'\x11\x02\x64\x00\x00\x00\x00'
-        return self.data_write_dongle(init_seq)
-
+        return self.data_write_dongle(b'\x11\x02\x64\x00\x00\x00\x00')
 
     def init_dongle(self):
-        retry = 3
-        done = 0
         if not self.send_init():
-            raise Exception("oh no")
+            raise Exception("Error during send_init")
 
     def setup_dongle(self):
         # The other implementation always does this, but it might not be necessary
@@ -188,14 +142,13 @@ class CorsairAxPsu(BaseDriver):
 
         # Wonder what this is
         d = (17, 2, 100, 0, 0, 0, 0)
-        self.data_write_dongle( d )
+        self.data_write_dongle(d)
         ret = self.data_read_dongle()
+        print("Unknown setup reply: {}".format(hexlify(ret).decode()))
 
-        #print( "Mysterious reply: {}".format(hexlify(ret).decode()))
+        print("Dongle Version: {}".format(self.read_dongle_version()))
 
-        print( "Dongle Version: {}".format(self.read_dongle_version()))
-
-        self.type =  self.read_psu_model()
+        self.type = self.read_psu_model()
         print("PSU type: {}".format(self.type))
 
 
@@ -217,7 +170,8 @@ class CorsairAxPsu(BaseDriver):
         return FanControlMode(self.read_pmbus(_CORSAIR_FAN_CONTROL_MODE, 1)[0])
 
     def _get_12v_ocp_mode(self):
-        return ''
+        return "NOT IMPLEMENTED"
+
     def _input_power_at(self, input_voltage, output_power):
         def quadratic(params, x):
             a, b, c = params
@@ -228,12 +182,11 @@ class CorsairAxPsu(BaseDriver):
 
         # interpolate for input_voltage
         return for_in115v + (for_in230v - for_in115v) / 115 * (input_voltage - 115)
- 
 
     def get_status(self):
         ret = self.write_pmbus(CMD.PAGE, [0])
-        if not (ret == b''):
-            print("Failed to change page.")
+        if ret:
+            raise ValueError("Failed to change page.")
 
         input_voltage = self._get_float(CMD.READ_VIN)
         input_current = self._get_float(CMD.READ_IIN)
@@ -260,6 +213,8 @@ class CorsairAxPsu(BaseDriver):
         input_power = self._get_float(0xee)
         #input_power = round(self._input_power_at(input_voltage, output_power), 0)
         efficiency = round(output_power / input_power * 100, 0)
+        if efficiency > 100.0:
+            efficiency = 100.0
 
         status.append(('Total power output', output_power, 'W'))
         status.append(('Estimated input power', input_power, 'W'))
