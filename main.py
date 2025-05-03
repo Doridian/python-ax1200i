@@ -54,7 +54,6 @@ class CorsairAxPsu(BaseDriver):
 
     def __init__(self):
         self.type = ''
-        pass
 
     def data_read_dongle(self):
         r = b''
@@ -108,7 +107,7 @@ class CorsairAxPsu(BaseDriver):
         d1 = bytes((0x13, 3, 6, 1, 7, length, register))
         self.data_write_dongle(d1)
         ret = self.data_read_dongle()
-        if not ret == b'':
+        if ret:
             raise Exception("Unexpected reply: {}".format(hexlify(ret)))
         # Seems to be always empty.
 
